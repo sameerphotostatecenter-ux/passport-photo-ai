@@ -1,85 +1,89 @@
-import OpenAI, { toFile } from 'openai';
-
 const PROMPT = `Create a realistic passport-size photo of the same person in the image. Keep the face, expression, and all facial features completely unchanged. Replace the current outfit with a professional suit and tie suitable for official documents. Maintain a clean white background, natural lighting, and correct proportions for a passport photo.`;
 
 export const maxDuration = 300;
 
 export async function POST(request) {
   try {
-    const key = process.env.OPENAI_API_KEY;
+    const token = process.env.CLOUDFLARE_AI_TOKEN;
+    const accountId = process.env.CLOUDFLARE_ACCOUNT_ID;
 
-    if (!key) {
+    if (!token || !accountId) {
       return Response.json(
-        { error: 'OPENAI_API_KEY is not configured.' },
+        { error: "Cloudflare AI is not configured." },
         { status: 500 }
       );
     }
 
     const form = await request.formData();
-    const file = form.get('image');
+    const file = form.get("image");
 
-    if (!file || typeof file.arrayBuffer !== 'function') {
+    if (!file || typeof file.arrayBuffer !== "function") {
       return Response.json(
-        { error: 'Please select an image first.' },
+        { error: "Please upload an image." },
         { status: 400 }
       );
     }
 
-    const type = file.type || 'image/jpeg';
+    const bytes = await file.arrayBuffer();
 
-    if (!['image/png', 'image/jpeg', 'image/webp'].includes(type)) {
-      return Response.json(
-        { error: 'Please upload JPG, PNG or WebP.' },
-        { status: 400 }
-      );
-    }
+    const aiForm = new FormData();
 
-    const bytes = Buffer.from(await file.arrayBuffer());
-
-    const client = new OpenAI({
-      apiKey: key
-    });
-
-    const input = await toFile(
-      bytes,
-      file.name || 'photo.jpg',
-      { type }
+    aiForm.append("prompt", PROMPT);
+    aiForm.append(
+      "input_image_0",
+      new Blob([bytes], { type: file.type || "image/jpeg" }),
+      file.name || "photo.jpg"
     );
 
-    const result = await client.images.edit({
-      model: 'gpt-image-2',
-      image: input,
-      prompt: PROMPT,
-      size: '1024x1536',
-      quality: 'high',
-      background: 'opaque',
-      output_format: 'png'
-    });
+    aiForm.append("width", "768");
+    aiForm.append("height", "1024");
 
-    const image = result?.data?.[0]?.b64_json;
+    const response = await fetch(
+      `https://api.cloudflare.com/client/v4/accounts/${accountId}/ai/run/@cf/black-forest-labs/flux-2-klein-4b`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`
+        },
+        body: aiForm
+      }
+    );
 
-    if (!image) {
-      throw new Error('No image was returned by OpenAI.');
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error(errorText);
+
+      return Response.json(
+        { error: "Cloudflare AI request failed." },
+        { status: response.status }
+      );
+    }
+
+    const result = await response.json();
+
+    if (!result.success || !result.result?.image) {
+      console.error(result);
+
+      return Response.json(
+        { error: "No image was returned." },
+        { status: 500 }
+      );
     }
 
     return Response.json({
-      image: `data:image/png;base64,${image}`
+      image: `data:image/png;base64,${result.result.image}`
     });
 
   } catch (error) {
     console.error(error);
 
     return Response.json(
-      {
-        error: error?.message || 'Image generation failed.'
-      },
+      { error: error?.message || "Generation failed." },
       { status: 500 }
     );
   }
 }
 
 export async function GET() {
-  return Response.json({
-    ok: true
-  });
+  return Response.json({ ok: true });
 }
